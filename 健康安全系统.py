@@ -1,0 +1,814 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, simpledialog, filedialog
+import datetime
+import json
+import os
+import sys
+import calendar
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from PIL import Image, ImageTk, ImageDraw
+import matplotlib.pyplot as plt
+import warnings
+
+# 忽略字体缺失警告
+warnings.filterwarnings("ignore", category=UserWarning, message="Glyph 8722.*")
+
+# 设置中文字体
+try:
+    # 尝试获取系统上可用的中文字体
+    from matplotlib import font_manager as fm
+    font_list = fm.findSystemFonts()
+    chinese_fonts = [f for f in font_list if 'simhei' in f.lower() or 'heiti' in f.lower() or 'microsoftyahei' in f.lower()]
+    if chinese_fonts:
+        plt.rcParams["font.family"] = [fm.FontProperties(fname=f).get_name() for f in chinese_fonts]
+    else:
+        print("警告: 未找到中文字体，图表文字可能无法正常显示")
+        plt.rcParams["font.family"] = ["sans-serif"]  # 使用默认字体
+except Exception as e:
+    print(f"警告: 字体设置失败，错误信息: {e}，图表文字可能无法正常显示")
+    plt.rcParams["font.family"] = ["sans-serif"]  # 使用默认字体
+
+# 应用常量
+AVATAR_DIR = "avatars"  # 头像存储目录
+DEFAULT_AVATARS = ["默认头像.png"]  # 修改为指定的默认头像
+USER_FILE = "users.json"
+DEFAULT_HABITS = ["运动", "喝水", "阅读", "早睡"]
+
+def load_users():
+    """加载用户数据，兼容新旧格式"""
+    if os.path.exists(USER_FILE):
+        try:
+            with open(USER_FILE, "r", encoding="utf-8") as f:
+                users = json.load(f)
+                
+                # 检查并升级用户数据格式
+                for username in list(users.keys()):
+                    user_data = users[username]
+                    
+                    # 旧版格式（只有密码字符串）升级为新版格式（字典）
+                    if isinstance(user_data, str):
+                        # 保存旧密码，添加默认头像和注册日期
+                        password = user_data
+                        users[username] = {
+                            "password": password,
+                            "avatar": os.path.join(AVATAR_DIR, DEFAULT_AVATARS[0]),
+                            "register_date": datetime.date.today().isoformat()
+                        }
+                    
+                    # 确保用户数据包含所有必要字段
+                    elif isinstance(user_data, dict):
+                        if "avatar" not in user_data:
+                            user_data["avatar"] = os.path.join(AVATAR_DIR, DEFAULT_AVATARS[0])
+                        if "register_date" not in user_data:
+                            user_data["register_date"] = datetime.date.today().isoformat()
+                    
+                    else:
+                        # 无效数据，删除该用户
+                        print(f"警告: 用户 {username} 的数据格式无效，已删除")
+                        del users[username]
+                
+                return users
+        except json.JSONDecodeError:
+            print("警告: 用户数据文件损坏，创建新文件")
+            return {}
+    return {}
+
+def save_users(users):
+    """保存用户数据"""
+    with open(USER_FILE, "w", encoding="utf-8") as f:
+        json.dump(users, f, ensure_ascii=False, indent=2)
+
+def register_user(username, password):
+    """注册新用户"""
+    users = load_users()
+    if username in users:
+        return False, "用户名已存在！"
+    
+    # 创建用户目录
+    if not os.path.exists(AVATAR_DIR):
+        os.makedirs(AVATAR_DIR)
+    user_avatar_dir = os.path.join(AVATAR_DIR, username)
+    if not os.path.exists(user_avatar_dir):
+        os.makedirs(user_avatar_dir)
+    
+    # 设置默认头像
+    default_avatar = os.path.join(AVATAR_DIR, DEFAULT_AVATARS[0])
+    
+    # 保存用户信息
+    users[username] = {
+        "password": password,
+        "avatar": default_avatar,
+        "register_date": datetime.date.today().isoformat()
+    }
+    save_users(users)
+    return True, "注册成功！"
+
+def login_user(username, password):
+    """用户登录验证"""
+    users = load_users()
+    if username in users and users[username]["password"] == password:
+        return True, "登录成功！"
+    return False, "用户名或密码错误！"
+
+class HealthApp:
+    """健康打卡应用主类"""
+    def __init__(self, root, username):
+        self.username = username
+        self.data_file = f"health_data_{self.username}.json"
+        self.habit_file = f"habits_{self.username}.json"
+        self.root = root
+        self.root.title(f"健康打卡 - {username}")
+        self.root.geometry("800x600")
+        self.data = self.load_data()
+        self.habits = self.load_habits()
+        self.date_str = datetime.date.today().isoformat()
+        self.vars = {}
+        
+        # 初始化头像相关属性
+        self.avatar_path = self.get_user_avatar()
+        self.avatar_image = None
+        self.avatar_size = (100, 100)  # 头像显示尺寸
+        
+        # 创建UI
+        self.setup_ui()
+        # 初始化样式
+        self.setup_styles()
+        # 加载日历数据
+        self.load_calendar_data()
+
+    def setup_ui(self):
+        """设置用户界面"""
+        # 创建顶部导航栏
+        self.create_navbar()
+        
+        # 创建主框架
+        main_frame = ttk.Frame(self.root, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # 左侧日历区域
+        left_frame = ttk.LabelFrame(main_frame, text="日历", padding=10)
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.setup_calendar(left_frame)
+        
+        # 右侧打卡区域
+        right_frame = ttk.LabelFrame(main_frame, text="今日打卡", padding=10)
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        self.setup_habit_tracker(right_frame)
+        
+        # 底部统计区域
+        stats_frame = ttk.LabelFrame(self.root, text="统计", padding=10)
+        stats_frame.pack(fill=tk.BOTH, expand=True)
+        self.setup_stats(stats_frame)
+    
+    def create_navbar(self):
+        """创建顶部导航栏"""
+        navbar = ttk.Frame(self.root)
+        navbar.pack(fill=tk.X)
+        
+        # 头像显示区域
+        avatar_frame = ttk.Frame(navbar, padding=10)
+        avatar_frame.pack(side=tk.LEFT, fill=tk.Y)
+        
+        ttk.Label(avatar_frame, text="用户头像:", font=("微软雅黑", 12)).pack(side=tk.LEFT)
+        self.avatar_label = ttk.Label(avatar_frame)
+        self.avatar_label.pack(side=tk.LEFT, padx=10)
+        self.update_avatar_display()  # 显示初始头像
+        
+        ttk.Button(avatar_frame, text="更换头像", command=self.change_avatar).pack(side=tk.LEFT, padx=5)
+        
+        # 导航按钮
+        button_frame = ttk.Frame(navbar)
+        button_frame.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        ttk.Button(button_frame, text="今日", command=self.show_today).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="习惯管理", command=self.manage_habits).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="退出", command=self.root.quit).pack(side=tk.LEFT, padx=5)
+    
+    def get_user_avatar(self):
+        """获取用户头像路径，若无则创建默认头像目录"""
+        users = load_users()
+        if self.username in users:
+            avatar_path = users[self.username]["avatar"]
+            # 检查头像文件是否存在，不存在则使用默认头像
+            if not os.path.exists(avatar_path):
+                default_avatar = os.path.join(AVATAR_DIR, DEFAULT_AVATARS[0])
+                try:
+                    users[self.username]["avatar"] = default_avatar
+                    save_users(users)
+                except Exception as e:
+                    print(f"更新用户头像路径失败: {e}")
+                return default_avatar
+            return avatar_path
+        
+        # 新用户初始化头像目录
+        if not os.path.exists(AVATAR_DIR):
+            os.makedirs(AVATAR_DIR)
+        user_avatar_dir = os.path.join(AVATAR_DIR, self.username)
+        if not os.path.exists(user_avatar_dir):
+            os.makedirs(user_avatar_dir)
+        
+        # 设置默认头像
+        default_avatar = os.path.join(AVATAR_DIR, DEFAULT_AVATARS[0])
+        users[self.username] = {"password": "default", "avatar": default_avatar}
+        try:
+            save_users(users)
+        except Exception as e:
+            print(f"保存新用户头像路径失败: {e}")
+        return default_avatar
+    
+    def update_avatar_display(self):
+        """更新头像显示"""
+        try:
+            # 调整头像尺寸
+            img = Image.open(self.avatar_path)
+            img = img.resize(self.avatar_size, Image.LANCZOS)
+            self.avatar_image = ImageTk.PhotoImage(img)
+            self.avatar_label.config(image=self.avatar_image)
+        except Exception as e:
+            print(f"头像加载失败: {e}")
+            # 加载失败时显示默认提示
+            self.avatar_label.config(text="头像加载失败")
+    
+    def change_avatar(self):
+        """更换头像对话框"""
+        top = tk.Toplevel(self.root)
+        top.title("更换头像")
+        top.geometry("400x300")
+        top.resizable(False, False)
+        
+        ttk.Label(top, text="选择头像:", font=("微软雅黑", 12)).pack(pady=10)
+        
+        # 预设头像选择框架
+        preset_frame = ttk.LabelFrame(top, text="预设头像")
+        preset_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        preset_avatars = []
+        for i, avatar in enumerate(DEFAULT_AVATARS):
+            path = os.path.join(AVATAR_DIR, avatar)
+            # 若预设头像不存在则创建示例头像（可根据需求调整）
+            if not os.path.exists(path):
+                print(f"警告: 默认头像 {path} 不存在，请检查文件。")
+                # 这里可以选择保留原有的创建示例头像逻辑，或者注释掉
+                # self.create_dummy_avatar(path, i) 
+            
+            try:
+                img = Image.open(path)
+                img = img.resize((60, 60), Image.LANCZOS)
+                photo = ImageTk.PhotoImage(img)
+                
+                btn = ttk.Button(preset_frame, image=photo, 
+                               command=lambda p=path: self.set_avatar(p))
+                btn.image = photo  # 保留引用防止垃圾回收
+                btn.grid(row=i//5, column=i%5, padx=5, pady=5)
+                preset_avatars.append(btn)
+            except Exception as e:
+                print(f"加载预设头像 {path} 失败: {e}")
+        
+        # 本地上传按钮
+        ttk.Button(top, text="从本地选择图片", 
+                 command=self.upload_avatar).pack(pady=10)
+        
+        ttk.Button(top, text="关闭", command=top.destroy).pack(pady=5)
+
+    def create_dummy_avatar(self, path, index):
+        """创建示例预设头像（若不存在）"""
+        if "black" in path:
+            color = (0, 0, 0)  # 黑色
+        elif "white" in path:
+            color = (255, 255, 255)  # 白色
+        else:
+            color = (0, 0, 0)  # 默认黑色
+        
+        img = Image.new('RGB', (100, 100), color=color)
+        img.save(path)
+    
+    def upload_avatar(self):
+        """本地上传头像"""
+        file_path = filedialog.askopenfilename(
+            title="选择头像图片",
+            filetypes=[("图片文件", "*.png;*.jpg;*.jpeg")]
+        )
+        if file_path:
+            try:
+                # 保存到用户专属头像目录
+                user_avatar_dir = os.path.join(AVATAR_DIR, self.username)
+                if not os.path.exists(user_avatar_dir):
+                    os.makedirs(user_avatar_dir)
+                
+                # 生成唯一文件名
+                filename = f"avatar_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}.png"
+                dest_path = os.path.join(user_avatar_dir, filename)
+                
+                # 调整图片尺寸
+                img = Image.open(file_path)
+                img = img.resize((200, 200), Image.LANCZOS)
+                img.save(dest_path)
+                
+                # 设置新头像
+                self.set_avatar(dest_path)
+                
+            except Exception as e:
+                messagebox.showerror("错误", f"头像上传失败: {e}")
+    
+    def set_avatar(self, path):
+        """设置用户头像并更新数据"""
+        self.avatar_path = path
+        users = load_users()
+        if self.username in users:
+            users[self.username]["avatar"] = path
+            save_users(users)
+            self.update_avatar_display()
+            messagebox.showinfo("成功", "头像已更新！")
+    
+    def setup_calendar(self, parent):
+        """设置日历显示"""
+        # 获取当前年月
+        today = datetime.date.today()
+        self.current_year = today.year
+        self.current_month = today.month
+        
+        # 日历导航
+        nav_frame = ttk.Frame(parent)
+        nav_frame.pack(fill=tk.X)
+        
+        ttk.Button(nav_frame, text="<<", command=lambda: self.change_month(-1)).pack(side=tk.LEFT)
+        self.month_label = ttk.Label(nav_frame, text=f"{self.current_year}年 {self.current_month}月", font=("微软雅黑", 12))
+        self.month_label.pack(side=tk.LEFT, padx=20)
+        ttk.Button(nav_frame, text=">>", command=lambda: self.change_month(1)).pack(side=tk.LEFT)
+        ttk.Button(nav_frame, text="今天", command=self.show_today).pack(side=tk.RIGHT)
+        
+        # 星期标题
+        days_frame = ttk.Frame(parent)
+        days_frame.pack(fill=tk.X)
+        
+        days = ["一", "二", "三", "四", "五", "六", "日"]
+        for i, day in enumerate(days):
+            ttk.Label(days_frame, text=day, width=10).grid(row=0, column=i)
+        
+        # 日期网格
+        self.calendar_frame = ttk.Frame(parent)
+        self.calendar_frame.pack(fill=tk.BOTH, expand=True)
+        
+        self.draw_calendar()
+    
+    def setup_styles(self):
+        """设置按钮样式"""
+        # 移除新增的样式配置
+        pass
+
+    def draw_calendar(self):
+        """绘制日历"""
+        # 清除现有日期按钮
+        for widget in self.calendar_frame.winfo_children():
+            widget.destroy()
+        
+        # 获取当月日历数据
+        cal = calendar.monthcalendar(self.current_year, self.current_month)
+        
+        # 创建日期按钮
+        for week_idx, week in enumerate(cal):
+            for day_idx, day in enumerate(week):
+                if day != 0:
+                    date_obj = datetime.date(self.current_year, self.current_month, day)
+                    date_str = date_obj.isoformat()
+                    
+                    # 检查是否有打卡数据
+                    has_data = date_str in self.data
+                    
+                    # 检查是否是今天
+                    is_today = date_str == datetime.date.today().isoformat()
+                    
+                    # 检查是否完成所有打卡
+                    is_fully_completed = self.is_day_fully_completed(date_str)
+                    
+                    # 创建日期按钮
+                    btn = ttk.Button(
+                        self.calendar_frame, 
+                        text=str(day),
+                        width=10,
+                        command=lambda d=date_str: self.select_date(d)
+                    )
+                    
+                    # 如果完成所有打卡，添加对勾
+                    if is_fully_completed:
+                        # 创建带有对勾的图片
+                        img = Image.new('RGBA', (20, 20), (0, 0, 0, 0))
+                        draw = ImageDraw.Draw(img)
+                        draw.line((5, 10, 10, 15), fill=(0, 255, 0), width=2)
+                        draw.line((10, 15, 15, 5), fill=(0, 255, 0), width=2)
+                        photo = ImageTk.PhotoImage(img)
+                        btn.image = photo  # 保留引用防止垃圾回收
+                        btn.config(compound=tk.TOP, image=photo)
+                    else:
+                        if has_data:
+                            # 创建带有问号的图片
+                            img = Image.new('RGBA', (20, 20), (0, 0, 0, 0))
+                            draw = ImageDraw.Draw(img)
+                            draw.text((5, 5), "?", fill=(255, 0, 0))
+                            photo = ImageTk.PhotoImage(img)
+                            btn.image = photo  # 保留引用防止垃圾回收
+                            btn.config(compound=tk.TOP, image=photo)
+                    
+                    btn.grid(row=week_idx, column=day_idx, padx=2, pady=2)
+                    
+                else:
+                    # 空白单元格
+                    ttk.Label(self.calendar_frame, text="", width=10).grid(row=week_idx, column=day_idx)
+
+    def is_day_fully_completed(self, date_str):
+        """检查某天是否完成了所有打卡"""
+        if date_str in self.data:
+            day_data = self.data[date_str]
+            # 检查所有习惯是否都已打卡
+            for habit in self.habits:
+                if habit in day_data and not day_data[habit]:
+                    return False
+            return True
+        return False
+    
+    def change_month(self, offset):
+        """更改月份视图"""
+        self.current_month += offset
+        if self.current_month > 12:
+            self.current_month = 1
+            self.current_year += 1
+        elif self.current_month < 1:
+            self.current_month = 12
+            self.current_year -= 1
+        
+        self.month_label.config(text=f"{self.current_year}年 {self.current_month}月")
+        self.draw_calendar()
+    
+    def select_date(self, date_str):
+        """选择日期"""
+        self.date_str = date_str
+        self.load_calendar_data()
+    
+    def show_today(self):
+        """显示今天的日期"""
+        today = datetime.date.today()
+        self.current_year = today.year
+        self.current_month = today.month
+        self.date_str = today.isoformat()
+        
+        self.month_label.config(text=f"{self.current_year}年 {self.current_month}月")
+        self.draw_calendar()
+        self.load_calendar_data()
+    
+    def setup_habit_tracker(self, parent):
+        """设置习惯打卡区域"""
+        # 日期显示
+        self.date_label = ttk.Label(parent, text="", font=("微软雅黑", 14))
+        self.date_label.pack(pady=10)
+        
+        # 打卡项目框架
+        self.habit_frame = ttk.Frame(parent)
+        self.habit_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # 打卡按钮
+        button_frame = ttk.Frame(parent)
+        button_frame.pack(fill=tk.X, pady=10)
+        
+        ttk.Button(button_frame, text="保存打卡", command=self.save_data).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="添加备注", command=self.add_note).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="取消打卡", command=self.clear_data).pack(side=tk.LEFT, padx=5)
+    def clear_data(self):
+        """取消当天的打卡数据"""
+        confirm = messagebox.askyesno("确认", "确定要取消当天的打卡数据吗？")
+        if confirm:
+            if self.date_str in self.data:
+                del self.data[self.date_str]
+                self.save_data_to_file()
+                self.draw_calendar()
+                messagebox.showinfo("成功", "当天打卡数据已取消！")
+            else:
+                messagebox.showinfo("提示", "当天没有打卡数据，无需取消。")
+    def load_calendar_data(self):
+        """加载并显示日历选择日期的数据"""
+        # 更新日期显示
+        date_obj = datetime.date.fromisoformat(self.date_str)
+        self.date_label.config(text=f"{date_obj.year}年{date_obj.month}月{date_obj.day}日")
+        
+        # 清除现有习惯项目
+        for widget in self.habit_frame.winfo_children():
+            widget.destroy()
+        
+        # 显示习惯项目
+        for i, habit in enumerate(self.habits):
+            habit_var = tk.BooleanVar()
+            
+            # 检查是否已打卡
+            if self.date_str in self.data and habit in self.data[self.date_str]:
+                habit_var.set(self.data[self.date_str][habit])
+            
+            # 创建习惯项目行
+            habit_row = ttk.Frame(self.habit_frame)
+            habit_row.pack(fill=tk.X, pady=5)
+            
+            ttk.Checkbutton(habit_row, text=habit, variable=habit_var).pack(side=tk.LEFT)
+            
+            # 添加输入框（如果有）
+            if habit in ["体重", "步数"]:
+                entry_var = tk.StringVar()
+                if self.date_str in self.data and f"{habit}_value" in self.data[self.date_str]:
+                    entry_var.set(str(self.data[self.date_str][f"{habit}_value"]))
+                
+                ttk.Entry(habit_row, textvariable=entry_var, width=10).pack(side=tk.LEFT, padx=10)
+                self.vars[f"{habit}_value"] = entry_var
+            
+            self.vars[habit] = habit_var
+        
+        # 显示备注（如果有）
+        if self.date_str in self.data and "note" in self.data[self.date_str]:
+            ttk.Label(self.habit_frame, text="备注:", font=("微软雅黑", 10)).pack(anchor=tk.W, pady=5)
+            note_text = tk.Text(self.habit_frame, height=3, width=40)
+            note_text.insert(tk.END, self.data[self.date_str]["note"])
+            note_text.pack(fill=tk.X, pady=5)
+            self.vars["note"] = note_text
+    
+    def manage_habits(self):
+        """管理习惯项目"""
+        top = tk.Toplevel(self.root)
+        top.title("习惯管理")
+        top.geometry("400x300")
+        
+        ttk.Label(top, text="当前习惯:", font=("微软雅黑", 12)).pack(pady=10)
+        
+        # 显示当前习惯
+        habit_listbox = tk.Listbox(top, width=30, height=8)
+        habit_listbox.pack(pady=10)
+        
+        for habit in self.habits:
+            habit_listbox.insert(tk.END, habit)
+        
+        # 添加和删除按钮
+        button_frame = ttk.Frame(top)
+        button_frame.pack(fill=tk.X, pady=10)
+        
+        new_habit_var = tk.StringVar()
+        ttk.Entry(button_frame, textvariable=new_habit_var).pack(side=tk.LEFT, padx=5)
+        
+        def add_habit():
+            habit = new_habit_var.get().strip()
+            if habit and habit not in self.habits:
+                self.habits.append(habit)
+                self.save_habits()
+                habit_listbox.insert(tk.END, habit)
+                new_habit_var.set("")
+        
+        def remove_habit():
+            selected_index = habit_listbox.curselection()
+            if selected_index:
+                index = selected_index[0]
+                habit = habit_listbox.get(index)
+                if habit in self.habits:
+                    self.habits.remove(habit)
+                    self.save_habits()
+                    habit_listbox.delete(index)
+        
+        ttk.Button(button_frame, text="添加", command=add_habit).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="删除", command=remove_habit).pack(side=tk.LEFT, padx=5)
+        
+        ttk.Button(top, text="关闭", command=top.destroy).pack(pady=10)
+    
+    def add_note(self):
+        """添加备注"""
+        note = simpledialog.askstring("备注", "请输入备注:", parent=self.root)
+        if note is not None:  # 用户点击了确定按钮
+            if self.date_str not in self.data:
+                self.data[self.date_str] = {}
+            self.data[self.date_str]["note"] = note
+            self.save_data()
+            self.load_calendar_data()
+    
+    def save_data(self):
+        """保存打卡数据"""
+        # 检查日期是否存在
+        if self.date_str not in self.data:
+            self.data[self.date_str] = {}
+        
+        # 保存习惯打卡状态
+        for habit in self.habits:
+            if habit in self.vars:
+                self.data[self.date_str][habit] = self.vars[habit].get()
+            
+            # 保存输入值（如果有）
+            if f"{habit}_value" in self.vars:
+                value = self.vars[f"{habit}_value"].get()
+                if value:
+                    try:
+                        # 尝试转换为数字
+                        self.data[self.date_str][f"{habit}_value"] = float(value)
+                    except ValueError:
+                        self.data[self.date_str][f"{habit}_value"] = value
+        
+        # 保存备注（如果有）
+        if "note" in self.vars:
+            note = self.vars["note"].get("1.0", tk.END).strip()
+            if note:
+                self.data[self.date_str]["note"] = note
+        
+        # 保存数据到文件
+        self.save_data_to_file()
+        
+        # 更新日历显示，以便在当天完成打卡后立即显示绿色
+        self.draw_calendar()
+        
+        messagebox.showinfo("成功", "打卡数据已保存！")
+        # 检查是否所有习惯都未打卡
+        all_unchecked = all(not self.vars[habit].get() for habit in self.habits)
+        if all_unchecked:
+            # 如果所有习惯都未打卡，视为取消打卡
+            self.clear_data()
+            return
+    
+    def setup_stats(self, parent):
+        """设置统计图表"""
+        self.stats_frame = parent
+        
+        # 创建图表
+        self.create_chart()
+    
+    def create_chart(self):
+        """创建统计图表"""
+        # 清除现有图表
+        for widget in self.stats_frame.winfo_children():
+            widget.destroy()
+        
+        # 分析数据
+        habit_counts = {}
+        for date in self.data:
+            for habit in self.data[date]:
+                if habit in self.habits and self.data[date][habit]:
+                    if habit in habit_counts:
+                        habit_counts[habit] += 1
+                    else:
+                        habit_counts[habit] = 1
+        
+        # 计算总天数
+        total_days = len(self.data)
+        
+        # 创建图表
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
+        
+        # 饼图：习惯完成率
+        if habit_counts:
+            labels = list(habit_counts.keys())
+            sizes = [habit_counts[habit] for habit in labels]
+            ax1.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90)
+            ax1.set_title('习惯完成率')
+        else:
+            ax1.text(0.5, 0.5, '暂无数据', ha='center', va='center')
+            ax1.axis('off')
+        
+        # 柱状图：最近7天完成情况
+        recent_days = sorted(self.data.keys(), reverse=True)[:7]
+        recent_days = recent_days[::-1]  # 按时间顺序排列
+        
+        if recent_days:
+            # 确保所有习惯都有数据
+            recent_data = []
+            for day in recent_days:
+                day_data = self.data.get(day, {})
+                recent_data.append({
+                    habit: day_data.get(habit, False)
+                    for habit in self.habits
+                })
+            
+            # 计算每天完成的习惯数
+            completed_habits = [sum(1 for habit in day if day[habit]) for day in recent_data]
+            dates = [datetime.date.fromisoformat(day).strftime('%m-%d') for day in recent_days]
+            
+            ax2.bar(dates, completed_habits)
+            ax2.set_title('最近7天完成情况')
+            ax2.set_xlabel('日期')
+            ax2.set_ylabel('完成习惯数')
+        else:
+            ax2.text(0.5, 0.5, '暂无数据', ha='center', va='center')
+            ax2.axis('off')
+        
+        plt.tight_layout()
+        
+        # 将图表嵌入到Tkinter窗口
+        canvas = FigureCanvasTkAgg(fig, master=self.stats_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+    
+    def load_data(self):
+        """加载打卡数据"""
+        if os.path.exists(self.data_file):
+            try:
+                with open(self.data_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except json.JSONDecodeError:
+                return {}
+        return {}
+    
+    def save_data_to_file(self):
+        """保存打卡数据到文件"""
+        with open(self.data_file, "w", encoding="utf-8") as f:
+            json.dump(self.data, f, ensure_ascii=False, indent=2)
+        
+        # 更新统计图表
+        self.create_chart()
+    
+    def load_habits(self):
+        """加载习惯列表"""
+        if os.path.exists(self.habit_file):
+            try:
+                with open(self.habit_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except json.JSONDecodeError:
+                return DEFAULT_HABITS.copy()
+        return DEFAULT_HABITS.copy()
+    
+    def save_habits(self):
+        """保存习惯列表"""
+        with open(self.habit_file, "w", encoding="utf-8") as f:
+            json.dump(self.habits, f, ensure_ascii=False, indent=2)
+
+def login_window():
+    """登录窗口"""
+    root = tk.Tk()
+    root.title("健康打卡 - 登录")
+    root.geometry("400x300")
+    
+    # 设置样式
+    style = ttk.Style()
+    style.configure("Success.TButton", foreground="green")
+    style.configure("Today.TButton", foreground="blue", font=("微软雅黑", 10, "bold"))
+    style.configure("FullyCompleted.TButton", foreground="white", background="green")  # 完全完成的日期样式
+    
+    frame = ttk.Frame(root, padding=20)
+    frame.pack(fill=tk.BOTH, expand=True)
+    
+    ttk.Label(frame, text="健康打卡系统", font=("微软雅黑", 16)).pack(pady=20)
+    
+    username_var = tk.StringVar()
+    password_var = tk.StringVar()
+    
+    ttk.Label(frame, text="用户名:").pack(anchor=tk.W, pady=5)
+    ttk.Entry(frame, textvariable=username_var).pack(fill=tk.X, pady=5)
+    
+    ttk.Label(frame, text="密码:").pack(anchor=tk.W, pady=5)
+    ttk.Entry(frame, textvariable=password_var, show="*").pack(fill=tk.X, pady=5)
+    
+    def login():
+        username = username_var.get()
+        password = password_var.get()
+        
+        if not username or not password:
+            messagebox.showerror("错误", "用户名和密码不能为空！")
+            return
+        
+        success, message = login_user(username, password)
+        if success:
+            root.destroy()
+            main_app = tk.Tk()
+            app = HealthApp(main_app, username)
+            main_app.mainloop()
+        else:
+            messagebox.showerror("登录失败", message)
+    
+    def register():
+        username = username_var.get()
+        password = password_var.get()
+        
+        if not username or not password:
+            messagebox.showerror("错误", "用户名和密码不能为空！")
+            return
+        
+        success, message = register_user(username, password)
+        if success:
+            messagebox.showinfo("注册成功", message)
+        else:
+            messagebox.showerror("注册失败", message)
+    
+    button_frame = ttk.Frame(frame)
+    button_frame.pack(fill=tk.X, pady=20)
+    
+    ttk.Button(button_frame, text="登录", command=login).pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+    ttk.Button(button_frame, text="注册", command=register).pack(side=tk.RIGHT, padx=5, fill=tk.X, expand=True)
+    
+    root.mainloop()
+
+if __name__ == "__main__":
+    # 确保头像目录存在
+    if not os.path.exists(AVATAR_DIR):
+        os.makedirs(AVATAR_DIR)
+    
+    # 检查并创建默认头像
+    for avatar in DEFAULT_AVATARS:
+        path = os.path.join(AVATAR_DIR, avatar)
+        if not os.path.exists(path):
+            try:
+                # 创建示例头像
+                img = Image.new('RGB', (100, 100), color=(200, 200, 255))
+                d = ImageDraw.Draw(img)
+                d.text((30, 40), "默认", fill=(0, 0, 0))
+                img.save(path)
+            except Exception as e:
+                print(f"无法创建默认头像: {e}")
+    
+    login_window()
